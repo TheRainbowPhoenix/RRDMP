@@ -1,36 +1,50 @@
-name: Build
+name: Build RRDMP (original devkitSH4)
 
 on:
   push:
-    tags: '*'
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      tag:
-        type: string
-        description: 'Tag Name to be created'
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    name: Build EX-word addon
-    runs-on: ubuntu-latest
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    runs-on: ubuntu-24.04
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Build
+      - uses: actions/checkout@v4
+      - name: Install original devkitSH4 + libdataplus
+        shell: bash
         run: |
-          cd ..
-          curl -sSfL https://github.com/MaxSignal/buildscripts/releases/download/Linux/devkitPro.tar.gz | tar -zxf -
-          cd -
-          DEVKITPRO="$OLDPWD/devkitPro" DEVKITSH4="$DEVKITPRO/devkitSH4" PATH="$DEVKITPRO/tools/bin:$DEVKITSH4/bin:$PATH" make
-          zip -r build.zip build
-
-      - name: Publish
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/sdk"
+          curl -fsSL --retry 3 https://github.com/MaxSignal/buildscripts/releases/download/Linux/devkitPro.tar.gz | tar xzf - -C "$RUNNER_TEMP/sdk"
+          test -x "$RUNNER_TEMP/sdk/devkitPro/devkitSH4/bin/sh-elf-gcc"
+      - name: Build and verify Japanese / Chinese RRDMP packages
+        shell: bash
         run: |
-          if [ -n "${{ inputs.tag }}" ]; then
-            gh release create "${{ inputs.tag }}" -t "${{ inputs.tag }}" -n "Automatic build of $(git rev-parse HEAD)." ./build.zip
-          else
-            gh release create "${GITHUB_REF/refs\/*s\//}" -t "${GITHUB_REF/refs\/*s\//}" -n "Automatic build of $(git rev-parse HEAD)." ./build.zip
-          fi
+          set -euo pipefail
+          export DEVKITPRO="$RUNNER_TEMP/sdk/devkitPro"
+          export DEVKITSH4="$DEVKITPRO/devkitSH4"
+          export PATH="$DEVKITPRO/tools/bin:$DEVKITSH4/bin:$PATH"
+          make clean
+          make app
+          for region in ja cn; do
+            test -s "build/$region/RRDMP/rrdmp.d01"
+            test -s "build/$region/RRDMP/diction.htm"
+            test -f "build/$region/RRDMP/fileinfo.cji"
+            grep -Fl rrdmp.d01 "build/$region/RRDMP"/inf*.htm
+          done
+          cmp build/ja/RRDMP/rrdmp.d01 build/cn/RRDMP/rrdmp.d01
+          file rrdmp.elf build/ja/RRDMP/rrdmp.d01
+          echo "Build passed; device-specific memory mapping unverified" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rrdmp-ja
+          path: build/ja/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rrdmp-cn
+          path: build/cn/
+          if-no-files-found: error
