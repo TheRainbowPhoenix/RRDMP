@@ -5,10 +5,10 @@ $(error "Please set DEVKITSH4 in your environment. export DEVKITSH4=<path to sdk
 endif
 include $(DEVKITSH4)/exword_rules
 
-TARGET       := xdtest
-MODNAME      := xdtest
-APPTITLE     := XD-N8500 TEST
-APPID        := XDTST
+TARGET       := rrdmp
+MODNAME      := rrdmp
+APPTITLE     := EX-WORD ROM RAM DUMPER
+APPID        := RRDMP
 APPMOD       := $(TARGET).d01
 
 SOURCEDIR    := src
