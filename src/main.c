@@ -24,6 +24,11 @@
 #define WRITE_CHUNK 4096u
 #define HEADROOM UINT32_C(0x00100000)
 
+/* Confirmed from ROM32A.BIN: initializes clocks, both DSP cores, their
+ * firmware DMAs, completion handlers, and the I2C audio codec. */
+typedef void (*rom_void_function)(void);
+#define ROM_SPU2DSP_INITIALIZE ((rom_void_function)0x80061334u)
+
 static const char * const paths16[] = {
     "\\\\crd0\\RAM16A.BIN", "\\\\crd0\\RAM16B.BIN"
 };
@@ -36,6 +41,55 @@ static const char * const test_paths[] = {
 };
 static const uint8_t test_bytes[16] = {
     'E','X','W','O','R','D','-','S','D','-','T','E','S','T','0','1'
+};
+
+struct mapped_region {
+    uint32_t address;
+    uint32_t size;
+    const char *label;
+    const char * const *paths;
+};
+
+static const char * const dsp0_program_paths[] = {
+    "\\\\crd0\\D0PRA.BIN", "\\\\crd0\\D0PRB.BIN"
+};
+static const char * const dsp0_data_paths[] = {
+    "\\\\crd0\\D0DTA.BIN", "\\\\crd0\\D0DTB.BIN"
+};
+static const char * const dsp0_aux_paths[] = {
+    "\\\\crd0\\D0AUXA.BIN", "\\\\crd0\\D0AUXB.BIN"
+};
+static const char * const dsp0_register_paths[] = {
+    "\\\\crd0\\D0REGA.BIN", "\\\\crd0\\D0REGB.BIN"
+};
+static const char * const dsp1_program_paths[] = {
+    "\\\\crd0\\D1PRA.BIN", "\\\\crd0\\D1PRB.BIN"
+};
+static const char * const dsp1_data_paths[] = {
+    "\\\\crd0\\D1DTA.BIN", "\\\\crd0\\D1DTB.BIN"
+};
+static const char * const dsp1_aux_paths[] = {
+    "\\\\crd0\\D1AUXA.BIN", "\\\\crd0\\D1AUXB.BIN"
+};
+static const char * const dsp1_register_paths[] = {
+    "\\\\crd0\\D1REGA.BIN", "\\\\crd0\\D1REGB.BIN"
+};
+static const char * const dsp_mailbox_paths[] = {
+    "\\\\crd0\\S2MBXA.BIN", "\\\\crd0\\S2MBXB.BIN"
+};
+
+/* Do not merge these into one broad range: the holes between them have not
+ * been mapped and may fault.  Address/size pairs are Ghidra memory blocks. */
+static const struct mapped_region spu_snapshot_regions[] = {
+    { UINT32_C(0xFE200000), UINT32_C(0x00028000), "DSP0 PROGRAM", dsp0_program_paths },
+    { UINT32_C(0xFE240000), UINT32_C(0x00038000), "DSP0 DATA",    dsp0_data_paths },
+    { UINT32_C(0xFE280000), UINT32_C(0x0000A000), "DSP0 AUX",     dsp0_aux_paths },
+    { UINT32_C(0xFE2FF000), UINT32_C(0x00001000), "DSP0 REGS",    dsp0_register_paths },
+    { UINT32_C(0xFE300000), UINT32_C(0x00028000), "DSP1 PROGRAM", dsp1_program_paths },
+    { UINT32_C(0xFE340000), UINT32_C(0x00038000), "DSP1 DATA",    dsp1_data_paths },
+    { UINT32_C(0xFE380000), UINT32_C(0x0000A000), "DSP1 AUX",     dsp1_aux_paths },
+    { UINT32_C(0xFE3C0000), UINT32_C(0x00001000), "DSP1 REGS",    dsp1_register_paths },
+    { UINT32_C(0xFE3FF000), UINT32_C(0x00001000), "DSP MAILBOX",  dsp_mailbox_paths }
 };
 
 /* Diagnostics visible on the device, not only in the return value.
@@ -96,6 +150,7 @@ static int poll_choice(void)
     if (key_state(KEY_ENTER)) current |= 1u;
     if (key_state(KEY_PAGE_DOWN)) current |= 2u;
     if (key_state(KEY_CHAR_T)) current |= 8u;
+    if (key_state(KEY_CHAR_S)) current |= 16u;
     if (key_state(KEY_BACK) || key_state(KEY_POWER)) current |= 4u;
     pressed = current & ~previous;
     previous = current;
@@ -103,6 +158,7 @@ static int poll_choice(void)
     if (pressed & 1u) return 32;
     if (pressed & 2u) return 16;
     if (pressed & 8u) return 1;
+    if (pressed & 16u) return 2;
     return 0;
 }
 
@@ -234,11 +290,10 @@ static void run_sd_probe(void)
     show_file_check(name, check, actual, detail);
 }
 
-static int dump_to_sd(uint32_t size)
+static int dump_to_sd(uint32_t base_address, uint32_t size,
+                      const char * const names[2], const char *heading)
 {
     const char *outname = 0;
-    const char * const *names = size == SIZE_32 ? paths32 : paths16;
-    uint32_t base_address = size == SIZE_32 ? NOR_BASE : RAM_BASE;
     unsigned long available = 0;
     uint32_t completed = 0;
     uint32_t next_progress = 0;
@@ -276,7 +331,7 @@ static int dump_to_sd(uint32_t size)
     }
 
     hex8(end, size);
-    screen(size == SIZE_32 ? "DUMP ROM 80000000-81FFFFFF" : "DUMP RAM 8C000000-8CFFFFFF", "Writing exact selected mapped range.",
+    screen(heading, "Writing exact selected mapped range.",
            "Do not remove card or power off.", "BACK cancels after a chunk.");
 
     while (completed < size) {
@@ -333,6 +388,27 @@ static int dump_to_sd(uint32_t size)
     }
 }
 
+/* This is intentionally post-initialization only.  The ROM initializer
+ * waits for its firmware DMA uploads before returning, so the captured
+ * windows represent a usable DSP/SPU state rather than reset garbage. */
+static int dump_spu_snapshot(void)
+{
+    unsigned i;
+    int result;
+
+    screen("INITIALIZE SPU2/DSP", "ROM FUNCTION 80061334", "DO NOT POWER OFF", "DSP FIRMWARE + CODEC SETUP");
+    ROM_SPU2DSP_INITIALIZE();
+
+    for (i = 0u; i < sizeof(spu_snapshot_regions) / sizeof(spu_snapshot_regions[0]); ++i) {
+        const struct mapped_region *region = &spu_snapshot_regions[i];
+        result = dump_to_sd(region->address, region->size, region->paths, region->label);
+        if (result != 0)
+            return result;
+    }
+    screen("SPU2/DSP SNAPSHOT COMPLETE", "9 MAPPED WINDOWS WRITTEN", "FILES START D0 / D1 / S2MBX", "BACK OR POWER: EXIT");
+    return 0;
+}
+
 int main(void)
 {
     int step;
@@ -344,7 +420,7 @@ int main(void)
     screen("SELECT ROM32 OR RAM16 TO SD",
            "ENTER: ROM32 80000000-81FFFFFF",
            "PAGE DOWN: RAM16 8C000000-8CFFFFFF",
-           "T: TINY SD FILE TEST / BACK: EXIT");
+           "S: INIT + DUMP SPU2/DSP / T: SD TEST");
 
     for (;;) {
         volatile unsigned spin;
@@ -355,6 +431,8 @@ int main(void)
             if (choice == 1) {
                 screen("SD FILE WRITE/READBACK TEST", "WRITES 16 BYTES TO CRD0",
                        "ENTER: CONFIRM TEST", "BACK: CANCEL");
+            } else if (choice == 2) {
+                screen("CONFIRM SPU2/DSP SNAPSHOT", "CALLS ROM DSP INITIALIZER", "DUMPS 9 MAPPED WINDOWS TO CRD0", "ENTER: WRITE / BACK: CANCEL");
             } else if (choice == 16)
                 screen("CONFIRM RAM16 (16 MiB)", "8C000000 - 8CFFFFFF",
                        "ENTER: WRITE NEW FILE TO CRD0",
@@ -372,7 +450,7 @@ int main(void)
     for (;;) {
         volatile unsigned spin;
         keypad_read();
-        if (!key_state(KEY_ENTER) && !key_state(KEY_PAGE_DOWN)) break;
+        if (!key_state(KEY_ENTER) && !key_state(KEY_PAGE_DOWN) && !key_state(KEY_CHAR_S)) break;
         for (spin = 0u; spin < 10000u; ++spin) { }
     }
     for (;;) {
@@ -384,8 +462,13 @@ int main(void)
     }
     if (choice == 1)
         run_sd_probe();
+    else if (choice == 2)
+        step = dump_spu_snapshot();
     else {
-        step = dump_to_sd(choice == 32 ? SIZE_32 : SIZE_16);
+        if (choice == 32)
+            step = dump_to_sd(NOR_BASE, SIZE_32, paths32, "DUMP ROM 80000000-81FFFFFF");
+        else
+            step = dump_to_sd(RAM_BASE, SIZE_16, paths16, "DUMP RAM 8C000000-8CFFFFFF");
         (void)step;
     }
 

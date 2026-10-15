@@ -2,7 +2,7 @@ name: Build RRDMP (original devkitSH4)
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'codex/**']
   workflow_dispatch:
 
 permissions:
