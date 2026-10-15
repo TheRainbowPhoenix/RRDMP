@@ -346,6 +346,11 @@ static int verify_file(const char *path, uint32_t expected,
         return CHECK_SIZE;
     }
 
+    if (prefix_size == 0u) {
+        close_rc = sys_close(fd);
+        *detail_out = close_rc;
+        return close_rc == 0 ? CHECK_OK : CHECK_CLOSE;
+    }
     if (prefix_size > sizeof(buf)) {
         sys_close(fd);
         return CHECK_READ;
@@ -369,14 +374,20 @@ static int verify_file(const char *path, uint32_t expected,
 }
 
 static void show_file_check(const char *path, int check,
-                            uint32_t actual, int detail)
+                            uint32_t actual, int detail,
+                            int prefix_checked)
 {
     char bytes[9], rc[9];
     hex8(bytes, actual);
     hex8(rc, (uint32_t)detail);
-    if (check == CHECK_OK)
-        screen("FILE EXISTS / SIZE + PREFIX MATCH", path,
-               "SIZE HEX BYTES:", bytes);
+    if (check == CHECK_OK) {
+        if (prefix_checked)
+            screen("FILE EXISTS / SIZE + PREFIX MATCH", path,
+                   "SIZE HEX BYTES:", bytes);
+        else
+            screen("MMIO FILE EXISTS / SIZE MATCH", path,
+                   "LIVE PREFIX NOT COMPARED", bytes);
+    }
     else if (check == CHECK_OPEN)
         screen("POST-WRITE REOPEN FAILED", path,
                "OPEN RETURN (HEX):", rc);
@@ -429,11 +440,12 @@ static void run_sd_probe(void)
     check = verify_file(name, (uint32_t)sizeof(test_bytes),
                         test_bytes, (unsigned)sizeof(test_bytes),
                         &actual, &detail);
-    show_file_check(name, check, actual, detail);
+    show_file_check(name, check, actual, detail, 1);
 }
 
 static int dump_to_sd(uint32_t base_address, uint32_t size,
-                      const char * const names[FILE_VARIANTS], const char *heading)
+                      const char * const names[FILE_VARIANTS], const char *heading,
+                      int compare_live_prefix)
 {
     const char *outname = 0;
     unsigned long available = 0;
@@ -519,15 +531,19 @@ static int dump_to_sd(uint32_t base_address, uint32_t size,
         return -(10 + failure);
     }
 
-    /* Read back by path only after closing the write handle. This will
-     * reveal false positive "completed" reports where SD shows no file. */
-    read_mapped_words(base_address, dump_bounce_words, (unsigned)sizeof(prefix));
-    for (i = 0u; i < sizeof(prefix); ++i)
-        prefix[i] = ((const uint8_t *)dump_bounce_words)[i];
+    /* Read back by path only after closing the write handle.  Unlike ROM,
+     * DSP/SPU registers and active DSP RAM are allowed to change after their
+     * capture, so those MMIO files are size-verified but not prefix-compared. */
+    if (compare_live_prefix) {
+        read_mapped_words(base_address, dump_bounce_words, (unsigned)sizeof(prefix));
+        for (i = 0u; i < sizeof(prefix); ++i)
+            prefix[i] = ((const uint8_t *)dump_bounce_words)[i];
+    }
     {
-        int check = verify_file(outname, size, prefix, (unsigned)sizeof(prefix),
+        int check = verify_file(outname, size, prefix,
+                                compare_live_prefix ? (unsigned)sizeof(prefix) : 0u,
                                 &actual, &check_detail);
-        show_file_check(outname, check, actual, check_detail);
+        show_file_check(outname, check, actual, check_detail, compare_live_prefix);
         return check == CHECK_OK ? 0 : -20 + check;
     }
 }
@@ -563,7 +579,8 @@ static int dump_spu_snapshot(int capture_while_beeping)
 
     for (i = 0u; i < sizeof(spu_snapshot_regions) / sizeof(spu_snapshot_regions[0]); ++i) {
         const struct mapped_region *region = &spu_snapshot_regions[i];
-        result = dump_to_sd(region->address, region->size, region->paths, region->label);
+        result = dump_to_sd(region->address, region->size, region->paths,
+                            region->label, 0);
         if (result != 0) {
             if (capture_while_beeping) ROM_SPU2DSP1_STOP_BEEP();
             return result;
@@ -636,9 +653,11 @@ int main(void)
         step = dump_spu_snapshot(1);
     else {
         if (choice == 32)
-            step = dump_to_sd(NOR_BASE, SIZE_32, paths32, "DUMP ROM 80000000-81FFFFFF");
+            step = dump_to_sd(NOR_BASE, SIZE_32, paths32,
+                              "DUMP ROM 80000000-81FFFFFF", 1);
         else
-            step = dump_to_sd(RAM_BASE, SIZE_16, paths16, "DUMP RAM 8C000000-8CFFFFFF");
+            step = dump_to_sd(RAM_BASE, SIZE_16, paths16,
+                              "DUMP RAM 8C000000-8CFFFFFF", 1);
         (void)step;
     }
 
