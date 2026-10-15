@@ -130,8 +130,8 @@ static const struct mapped_region spu_snapshot_regions[] = {
     { UINT32_C(0xFE300000), UINT32_C(0x00028000), "DSP1 PROGRAM", dsp1_program_paths },
     { UINT32_C(0xFE340000), UINT32_C(0x00038000), "DSP1 DATA",    dsp1_data_paths },
     { UINT32_C(0xFE380000), UINT32_C(0x0000A000), "DSP1 AUX",     dsp1_aux_paths },
-    { UINT32_C(0xFE3C0000), UINT32_C(0x00001000), "DSP1 REGS",    dsp1_register_paths },
-    { UINT32_C(0xFE3FF000), UINT32_C(0x00001000), "DSP MAILBOX",  dsp_mailbox_paths }
+    { UINT32_C(0xFE3C0000), UINT32_C(0x00001000), "FSI REGS",     dsp1_register_paths },
+    { UINT32_C(0xFE3FF000), UINT32_C(0x00001000), "DSP1 CTRL/DMA", dsp_mailbox_paths }
 };
 
 /* Diagnostics visible on the device, not only in the return value.
