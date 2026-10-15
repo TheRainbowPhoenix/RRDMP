@@ -77,6 +77,39 @@ static const char * const dsp1_register_paths[] = {
 static const char * const dsp_mailbox_paths[] = {
     "\\\\crd0\\S2MBXA.BIN", "\\\\crd0\\S2MBXB.BIN"
 };
+static const char * const spu2_register_report_paths[] = {
+    "\\\\crd0\\SPU2RGA.TXT", "\\\\crd0\\SPU2RGB.TXT"
+};
+
+/* The raw 4 KiB D0REG file below contains this shared SPU2 control page.
+ * This small report gives the important words names and preserves the exact
+ * post-initialization values needed to decode the DSP0 PRAM/XRAM bank sizes. */
+struct spu2_register {
+    const char *name;
+    uint32_t address;
+};
+
+static const struct spu2_register spu2_registers[] = {
+    { "PBANKC0", UINT32_C(0xFE2FFC00) },
+    { "PBANKC1", UINT32_C(0xFE2FFC04) },
+    { "XBANKC0", UINT32_C(0xFE2FFC10) },
+    { "XBANKC1", UINT32_C(0xFE2FFC14) },
+    { "SPUSRST", UINT32_C(0xFE2FFC24) },
+    { "SPUADR",  UINT32_C(0xFE2FFC28) },
+    { "ENDIAN",  UINT32_C(0xFE2FFC2C) },
+    { "GCOM0",   UINT32_C(0xFE2FFC40) },
+    { "GCOM1",   UINT32_C(0xFE2FFC44) },
+    { "GCOM2",   UINT32_C(0xFE2FFC48) },
+    { "GCOM3",   UINT32_C(0xFE2FFC4C) },
+    { "GCOM4",   UINT32_C(0xFE2FFC50) },
+    { "GCOM5",   UINT32_C(0xFE2FFC54) },
+    { "GCOM6",   UINT32_C(0xFE2FFC58) },
+    { "GCOM7",   UINT32_C(0xFE2FFC5C) },
+    { "DMABUF0", UINT32_C(0xFE2FFC80) },
+    { "DMABUF1", UINT32_C(0xFE2FFC84) },
+    { "DMABUF2", UINT32_C(0xFE2FFC88) },
+    { "DMABUF3", UINT32_C(0xFE2FFC8C) }
+};
 
 /* Do not merge these into one broad range: the holes between them have not
  * been mapped and may fault.  Address/size pairs are Ghidra memory blocks. */
@@ -84,7 +117,7 @@ static const struct mapped_region spu_snapshot_regions[] = {
     { UINT32_C(0xFE200000), UINT32_C(0x00028000), "DSP0 PROGRAM", dsp0_program_paths },
     { UINT32_C(0xFE240000), UINT32_C(0x00038000), "DSP0 DATA",    dsp0_data_paths },
     { UINT32_C(0xFE280000), UINT32_C(0x0000A000), "DSP0 AUX",     dsp0_aux_paths },
-    { UINT32_C(0xFE2FF000), UINT32_C(0x00001000), "DSP0 REGS",    dsp0_register_paths },
+    { UINT32_C(0xFE2FF000), UINT32_C(0x00001000), "DSP0 REGS + SPU2", dsp0_register_paths },
     { UINT32_C(0xFE300000), UINT32_C(0x00028000), "DSP1 PROGRAM", dsp1_program_paths },
     { UINT32_C(0xFE340000), UINT32_C(0x00038000), "DSP1 DATA",    dsp1_data_paths },
     { UINT32_C(0xFE380000), UINT32_C(0x0000A000), "DSP1 AUX",     dsp1_aux_paths },
@@ -177,6 +210,56 @@ static int choose_existing_free_filename(const char * const names[2],
             return 1;
         }
     }
+    return 0;
+}
+
+static int write_text(int fd, const char *text)
+{
+    unsigned count = 0u;
+    int result;
+    while (text[count] != '\0') ++count;
+    result = sys_write(fd, text, (int)count);
+    return result == (int)count ? 0 : -1;
+}
+
+static int dump_spu2_register_report(void)
+{
+    const char *outname = 0;
+    unsigned i;
+    int fd;
+
+    if (!choose_existing_free_filename(spu2_register_report_paths, &outname)) {
+        screen("CANNOT CREATE SPU2 REPORT", "SPU2RGA / SPU2RGB already used?",
+               "No existing file was deleted.", "BACK OR POWER: EXIT");
+        return -1;
+    }
+    fd = sys_open(outname, FILE_WR);
+    if (fd < 0) {
+        screen("SPU2 REPORT OPEN FAILED", outname,
+               "Empty file may remain.", "BACK OR POWER: EXIT");
+        return -2;
+    }
+
+    if (write_text(fd, "SPU2 post-ROM-initialization register snapshot\r\n") != 0 ||
+        write_text(fd, "Raw shared page: D0REG?.BIN FE2FF000-FE2FFFFF\r\n") != 0 ||
+        write_text(fd, "PBANKC/XBANKC select DSP0 PRAM/XRAM bank layout.\r\n\r\n") != 0) {
+        sys_close(fd);
+        return -3;
+    }
+    for (i = 0u; i < sizeof(spu2_registers) / sizeof(spu2_registers[0]); ++i) {
+        const struct spu2_register *reg = &spu2_registers[i];
+        char address[9], value[9];
+        uint32_t live_value = *(const volatile uint32_t *)(uintptr_t)reg->address;
+        hex8(address, reg->address);
+        hex8(value, live_value);
+        if (write_text(fd, reg->name) != 0 || write_text(fd, " 0x") != 0 ||
+            write_text(fd, address) != 0 || write_text(fd, " = 0x") != 0 ||
+            write_text(fd, value) != 0 || write_text(fd, "\r\n") != 0) {
+            sys_close(fd);
+            return -3;
+        }
+    }
+    if (sys_close(fd) != 0) return -4;
     return 0;
 }
 
@@ -399,13 +482,18 @@ static int dump_spu_snapshot(void)
     screen("INITIALIZE SPU2/DSP", "ROM FUNCTION 80061334", "DO NOT POWER OFF", "DSP FIRMWARE + CODEC SETUP");
     ROM_SPU2DSP_INITIALIZE();
 
+    screen("WRITE SPU2 REGISTER REPORT", "PBANKC / XBANKC + SHARED STATE", "POST-INITIALIZATION VALUES", "DO NOT POWER OFF");
+    result = dump_spu2_register_report();
+    if (result != 0)
+        return result;
+
     for (i = 0u; i < sizeof(spu_snapshot_regions) / sizeof(spu_snapshot_regions[0]); ++i) {
         const struct mapped_region *region = &spu_snapshot_regions[i];
         result = dump_to_sd(region->address, region->size, region->paths, region->label);
         if (result != 0)
             return result;
     }
-    screen("SPU2/DSP SNAPSHOT COMPLETE", "9 MAPPED WINDOWS WRITTEN", "FILES START D0 / D1 / S2MBX", "BACK OR POWER: EXIT");
+    screen("SPU2/DSP SNAPSHOT COMPLETE", "1 REPORT + 9 MAPPED WINDOWS", "FILES START SPU2RG / D0 / D1", "BACK OR POWER: EXIT");
     return 0;
 }
 
@@ -432,7 +520,7 @@ int main(void)
                 screen("SD FILE WRITE/READBACK TEST", "WRITES 16 BYTES TO CRD0",
                        "ENTER: CONFIRM TEST", "BACK: CANCEL");
             } else if (choice == 2) {
-                screen("CONFIRM SPU2/DSP SNAPSHOT", "CALLS ROM DSP INITIALIZER", "DUMPS 9 MAPPED WINDOWS TO CRD0", "ENTER: WRITE / BACK: CANCEL");
+                screen("CONFIRM SPU2/DSP SNAPSHOT", "CALLS ROM DSP INITIALIZER", "REPORT + 9 WINDOWS TO CRD0", "ENTER: WRITE / BACK: CANCEL");
             } else if (choice == 16)
                 screen("CONFIRM RAM16 (16 MiB)", "8C000000 - 8CFFFFFF",
                        "ENTER: WRITE NEW FILE TO CRD0",
