@@ -23,6 +23,7 @@
 #define SIZE_32 UINT32_C(0x02000000)
 #define WRITE_CHUNK 4096u
 #define HEADROOM UINT32_C(0x00100000)
+#define FILE_VARIANTS 3u
 
 /* Confirmed from ROM32A.BIN: initializes clocks, both DSP cores, their
  * firmware DMAs, completion handlers, and the I2C audio codec. */
@@ -32,14 +33,14 @@ typedef void (*rom_void_function)(void);
 #define ROM_SPU2DSP1_STOP_BEEP  ((rom_void_function)0x80061A4Eu)
 
 static const char * const paths16[] = {
-    "\\\\crd0\\RAM16A.BIN", "\\\\crd0\\RAM16B.BIN"
+    "\\\\crd0\\RAM16A.BIN", "\\\\crd0\\RAM16B.BIN", "\\\\crd0\\RAM16C.BIN"
 };
 static const char * const paths32[] = {
-    "\\\\crd0\\ROM32A.BIN", "\\\\crd0\\ROM32B.BIN"
+    "\\\\crd0\\ROM32A.BIN", "\\\\crd0\\ROM32B.BIN", "\\\\crd0\\ROM32C.BIN"
 };
 static const char digits[] = "0123456789ABCDEF";
 static const char * const test_paths[] = {
-    "\\\\crd0\\SDTSTA.TXT", "\\\\crd0\\SDTSTB.TXT"
+    "\\\\crd0\\SDTSTA.TXT", "\\\\crd0\\SDTSTB.TXT", "\\\\crd0\\SDTSTC.TXT"
 };
 static const uint8_t test_bytes[16] = {
     'E','X','W','O','R','D','-','S','D','-','T','E','S','T','0','1'
@@ -59,34 +60,34 @@ struct mapped_region {
 };
 
 static const char * const dsp0_program_paths[] = {
-    "\\\\crd0\\D0PRA.BIN", "\\\\crd0\\D0PRB.BIN"
+    "\\\\crd0\\D0PRA.BIN", "\\\\crd0\\D0PRB.BIN", "\\\\crd0\\D0PRC.BIN"
 };
 static const char * const dsp0_data_paths[] = {
-    "\\\\crd0\\D0DTA.BIN", "\\\\crd0\\D0DTB.BIN"
+    "\\\\crd0\\D0DTA.BIN", "\\\\crd0\\D0DTB.BIN", "\\\\crd0\\D0DTC.BIN"
 };
 static const char * const dsp0_aux_paths[] = {
-    "\\\\crd0\\D0AUXA.BIN", "\\\\crd0\\D0AUXB.BIN"
+    "\\\\crd0\\D0AUXA.BIN", "\\\\crd0\\D0AUXB.BIN", "\\\\crd0\\D0AUXC.BIN"
 };
 static const char * const dsp0_register_paths[] = {
-    "\\\\crd0\\D0REGA.BIN", "\\\\crd0\\D0REGB.BIN"
+    "\\\\crd0\\D0REGA.BIN", "\\\\crd0\\D0REGB.BIN", "\\\\crd0\\D0REGC.BIN"
 };
 static const char * const dsp1_program_paths[] = {
-    "\\\\crd0\\D1PRA.BIN", "\\\\crd0\\D1PRB.BIN"
+    "\\\\crd0\\D1PRA.BIN", "\\\\crd0\\D1PRB.BIN", "\\\\crd0\\D1PRC.BIN"
 };
 static const char * const dsp1_data_paths[] = {
-    "\\\\crd0\\D1DTA.BIN", "\\\\crd0\\D1DTB.BIN"
+    "\\\\crd0\\D1DTA.BIN", "\\\\crd0\\D1DTB.BIN", "\\\\crd0\\D1DTC.BIN"
 };
 static const char * const dsp1_aux_paths[] = {
-    "\\\\crd0\\D1AUXA.BIN", "\\\\crd0\\D1AUXB.BIN"
+    "\\\\crd0\\D1AUXA.BIN", "\\\\crd0\\D1AUXB.BIN", "\\\\crd0\\D1AUXC.BIN"
 };
 static const char * const dsp1_register_paths[] = {
-    "\\\\crd0\\D1REGA.BIN", "\\\\crd0\\D1REGB.BIN"
+    "\\\\crd0\\D1REGA.BIN", "\\\\crd0\\D1REGB.BIN", "\\\\crd0\\D1REGC.BIN"
 };
 static const char * const dsp_mailbox_paths[] = {
-    "\\\\crd0\\S2MBXA.BIN", "\\\\crd0\\S2MBXB.BIN"
+    "\\\\crd0\\S2MBXA.BIN", "\\\\crd0\\S2MBXB.BIN", "\\\\crd0\\S2MBXC.BIN"
 };
 static const char * const spu2_register_report_paths[] = {
-    "\\\\crd0\\SPU2RGA.TXT", "\\\\crd0\\SPU2RGB.TXT"
+    "\\\\crd0\\SPU2RGA.TXT", "\\\\crd0\\SPU2RGB.TXT", "\\\\crd0\\SPU2RGC.TXT"
 };
 
 /* The raw 4 KiB D0REG file below contains this shared SPU2 control page.
@@ -205,11 +206,11 @@ static int poll_choice(void)
     return 0;
 }
 
-static int choose_existing_free_filename(const char * const names[2],
+static int choose_existing_free_filename(const char * const names[FILE_VARIANTS],
                                           const char **picked)
 {
     unsigned i;
-    for (i = 0; i < 2u; ++i) {
+    for (i = 0; i < FILE_VARIANTS; ++i) {
         int fd = sys_open(names[i], FILE_RD);
         if (fd >= 0) {
             sys_close(fd);
@@ -432,7 +433,7 @@ static void run_sd_probe(void)
 }
 
 static int dump_to_sd(uint32_t base_address, uint32_t size,
-                      const char * const names[2], const char *heading)
+                      const char * const names[FILE_VARIANTS], const char *heading)
 {
     const char *outname = 0;
     unsigned long available = 0;
@@ -460,7 +461,7 @@ static int dump_to_sd(uint32_t base_address, uint32_t size,
     }
 
     if (!choose_existing_free_filename(names, &outname)) {
-        screen("CANNOT CREATE OUTPUT", "NOR16/32 A and B files may exist.",
+        screen("CANNOT CREATE OUTPUT", "A, B and C output files may exist.",
                "No existing file was deleted.", "BACK OR POWER: EXIT");
         return -3;
     }
