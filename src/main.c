@@ -28,6 +28,8 @@
  * firmware DMAs, completion handlers, and the I2C audio codec. */
 typedef void (*rom_void_function)(void);
 #define ROM_SPU2DSP_INITIALIZE ((rom_void_function)0x80061334u)
+#define ROM_SPU2DSP1_START_BEEP ((rom_void_function)0x80061988u)
+#define ROM_SPU2DSP1_STOP_BEEP  ((rom_void_function)0x80061A4Eu)
 
 static const char * const paths16[] = {
     "\\\\crd0\\RAM16A.BIN", "\\\\crd0\\RAM16B.BIN"
@@ -190,6 +192,7 @@ static int poll_choice(void)
     if (key_state(KEY_PAGE_DOWN)) current |= 2u;
     if (key_state(KEY_CHAR_T)) current |= 8u;
     if (key_state(KEY_CHAR_S)) current |= 16u;
+    if (key_state(KEY_CHAR_B)) current |= 32u;
     if (key_state(KEY_BACK) || key_state(KEY_POWER)) current |= 4u;
     pressed = current & ~previous;
     previous = current;
@@ -198,6 +201,7 @@ static int poll_choice(void)
     if (pressed & 2u) return 16;
     if (pressed & 8u) return 1;
     if (pressed & 16u) return 2;
+    if (pressed & 32u) return 3;
     return 0;
 }
 
@@ -280,6 +284,41 @@ static int dump_spu2_register_report(void)
     }
     if (sys_close(fd) != 0) return -4;
     return 0;
+}
+
+/* Shown before capture, rather than only written to SPU2RG?.TXT.  These are
+ * repeated live volatile reads and therefore distinguish an SD-file issue
+ * from an address-mapping/read-permission issue immediately on the device. */
+static int show_live_spu2_bank_controls(int beep_active)
+{
+    static const uint32_t bank_addresses[4] = {
+        UINT32_C(0xFE2FFC00), UINT32_C(0xFE2FFC04),
+        UINT32_C(0xFE2FFC10), UINT32_C(0xFE2FFC14)
+    };
+    static const char * const bank_names[4] = {
+        "PBANKC0", "PBANKC1", "XBANKC0", "XBANKC1"
+    };
+    unsigned i;
+
+    screen(beep_active ? "DSP BEEP ACTIVE: LIVE READBACK" : "SPU2 LIVE REGISTER READBACK",
+           "PBANKC0 / PBANKC1 / XBANKC0 / XBANKC1",
+           "ENTER: CAPTURE NOW", "BACK: CANCEL");
+    for (i = 0u; i < 4u; ++i) {
+        char value[9];
+        uint32_t live_value = *(const volatile uint32_t *)(uintptr_t)bank_addresses[i];
+        hex8(value, live_value);
+        print_at(14, 196 + 23 * i, bank_names[i]);
+        print_at(145, 196 + 23 * i, value);
+    }
+    lcdc_copy_vram();
+
+    for (;;) {
+        volatile unsigned spin;
+        keypad_read();
+        if (key_state(KEY_BACK) || key_state(KEY_POWER)) return -1;
+        if (key_state(KEY_ENTER)) return 0;
+        for (spin = 0u; spin < 10000u; ++spin) { }
+    }
 }
 
 
@@ -495,7 +534,7 @@ static int dump_to_sd(uint32_t base_address, uint32_t size,
 /* This is intentionally post-initialization only.  The ROM initializer
  * waits for its firmware DMA uploads before returning, so the captured
  * windows represent a usable DSP/SPU state rather than reset garbage. */
-static int dump_spu_snapshot(void)
+static int dump_spu_snapshot(int capture_while_beeping)
 {
     unsigned i;
     int result;
@@ -503,17 +542,33 @@ static int dump_spu_snapshot(void)
     screen("INITIALIZE SPU2/DSP", "ROM FUNCTION 80061334", "DO NOT POWER OFF", "DSP FIRMWARE + CODEC SETUP");
     ROM_SPU2DSP_INITIALIZE();
 
+    if (capture_while_beeping) {
+        /* This is exactly the ROM route that produces the known-working DSP
+         * beep: codec/clock enable, DSP1 command descriptor and COM0 doorbell. */
+        ROM_SPU2DSP1_START_BEEP();
+    }
+    result = show_live_spu2_bank_controls(capture_while_beeping);
+    if (result != 0) {
+        if (capture_while_beeping) ROM_SPU2DSP1_STOP_BEEP();
+        return result;
+    }
+
     screen("WRITE SPU2 REGISTER REPORT", "PBANKC / XBANKC + SHARED STATE", "POST-INITIALIZATION VALUES", "DO NOT POWER OFF");
     result = dump_spu2_register_report();
-    if (result != 0)
+    if (result != 0) {
+        if (capture_while_beeping) ROM_SPU2DSP1_STOP_BEEP();
         return result;
+    }
 
     for (i = 0u; i < sizeof(spu_snapshot_regions) / sizeof(spu_snapshot_regions[0]); ++i) {
         const struct mapped_region *region = &spu_snapshot_regions[i];
         result = dump_to_sd(region->address, region->size, region->paths, region->label);
-        if (result != 0)
+        if (result != 0) {
+            if (capture_while_beeping) ROM_SPU2DSP1_STOP_BEEP();
             return result;
+        }
     }
+    if (capture_while_beeping) ROM_SPU2DSP1_STOP_BEEP();
     screen("SPU2/DSP SNAPSHOT COMPLETE", "1 REPORT + 9 MAPPED WINDOWS", "FILES START SPU2RG / D0 / D1", "BACK OR POWER: EXIT");
     return 0;
 }
@@ -529,7 +584,7 @@ int main(void)
     screen("SELECT ROM32 OR RAM16 TO SD",
            "ENTER: ROM32 80000000-81FFFFFF",
            "PAGE DOWN: RAM16 8C000000-8CFFFFFF",
-           "S: INIT + DUMP SPU2/DSP / T: SD TEST");
+           "S: SPU2 SNAPSHOT / B: BEEP + SNAPSHOT / T: SD TEST");
 
     for (;;) {
         volatile unsigned spin;
@@ -542,6 +597,8 @@ int main(void)
                        "ENTER: CONFIRM TEST", "BACK: CANCEL");
             } else if (choice == 2) {
                 screen("CONFIRM SPU2/DSP SNAPSHOT", "CALLS ROM DSP INITIALIZER", "REPORT + 9 WINDOWS TO CRD0", "ENTER: WRITE / BACK: CANCEL");
+            } else if (choice == 3) {
+                screen("CONFIRM BEEP-LIVE SNAPSHOT", "STARTS ROM DSP BEEP FIRST", "READS WHILE BEEP IS ACTIVE", "ENTER: START / BACK: CANCEL");
             } else if (choice == 16)
                 screen("CONFIRM RAM16 (16 MiB)", "8C000000 - 8CFFFFFF",
                        "ENTER: WRITE NEW FILE TO CRD0",
@@ -559,7 +616,8 @@ int main(void)
     for (;;) {
         volatile unsigned spin;
         keypad_read();
-        if (!key_state(KEY_ENTER) && !key_state(KEY_PAGE_DOWN) && !key_state(KEY_CHAR_S)) break;
+        if (!key_state(KEY_ENTER) && !key_state(KEY_PAGE_DOWN) &&
+            !key_state(KEY_CHAR_S) && !key_state(KEY_CHAR_B)) break;
         for (spin = 0u; spin < 10000u; ++spin) { }
     }
     for (;;) {
@@ -572,7 +630,9 @@ int main(void)
     if (choice == 1)
         run_sd_probe();
     else if (choice == 2)
-        step = dump_spu_snapshot();
+        step = dump_spu_snapshot(0);
+    else if (choice == 3)
+        step = dump_spu_snapshot(1);
     else {
         if (choice == 32)
             step = dump_to_sd(NOR_BASE, SIZE_32, paths32, "DUMP ROM 80000000-81FFFFFF");
