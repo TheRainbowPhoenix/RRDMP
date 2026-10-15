@@ -43,6 +43,12 @@ static const uint8_t test_bytes[16] = {
     'E','X','W','O','R','D','-','S','D','-','T','E','S','T','0','1'
 };
 
+/* Do not pass a DSP/MMIO address straight to sys_write().  The file syscall
+ * changes execution context and can observe a different mapping (zeroes were
+ * observed in the first capture).  This RAM buffer makes every source access
+ * an explicit, volatile CPU bus read in this application before SD writing. */
+static uint32_t dump_bounce_words[WRITE_CHUNK / sizeof(uint32_t)];
+
 struct mapped_region {
     uint32_t address;
     uint32_t size;
@@ -220,6 +226,19 @@ static int write_text(int fd, const char *text)
     while (text[count] != '\0') ++count;
     result = sys_write(fd, text, (int)count);
     return result == (int)count ? 0 : -1;
+}
+
+/* All chosen dump regions and chunks are word aligned.  Word accesses avoid
+ * relying on byte-lane behavior of the DSP/SPU memory windows.  Keeping the
+ * words in ordinary RAM preserves the SH CPU's native byte order on SD. */
+static void read_mapped_words(uint32_t address, uint32_t *destination,
+                              unsigned byte_count)
+{
+    unsigned offset;
+    for (offset = 0u; offset < byte_count; offset += sizeof(uint32_t)) {
+        destination[offset / sizeof(uint32_t)] =
+            *(const volatile uint32_t *)(uintptr_t)(address + offset);
+    }
 }
 
 static int dump_spu2_register_report(void)
@@ -421,12 +440,13 @@ static int dump_to_sd(uint32_t base_address, uint32_t size,
         uint32_t chunk = size - completed;
         uint32_t written = 0;
         if (chunk > WRITE_CHUNK) chunk = WRITE_CHUNK;
+
+        /* Snapshot this chunk in the caller's CPU context before the file
+         * syscall.  This is deliberately not a direct MMIO source pointer. */
+        read_mapped_words(base_address + completed, dump_bounce_words,
+                          (unsigned)chunk);
         while (written < chunk) {
-            /* Match dictscript: hand the mapped ROM pointer directly to
-             * the OS file syscall, but in bounded 4-KiB segments.
-             * This can still fault if any chosen ROM address is unmapped. */
-            const void *source = (const void *)(uintptr_t)
-                                 (base_address + completed + written);
+            const uint8_t *source = (const uint8_t *)dump_bounce_words + written;
             int result = sys_write(fd, source, (int)(chunk - written));
             if (result <= 0 || (uint32_t)result > chunk - written) {
                 failure = 1;
@@ -461,8 +481,9 @@ static int dump_to_sd(uint32_t base_address, uint32_t size,
 
     /* Read back by path only after closing the write handle. This will
      * reveal false positive "completed" reports where SD shows no file. */
+    read_mapped_words(base_address, dump_bounce_words, (unsigned)sizeof(prefix));
     for (i = 0u; i < sizeof(prefix); ++i)
-        prefix[i] = *(const volatile uint8_t *)(uintptr_t)(base_address + i);
+        prefix[i] = ((const uint8_t *)dump_bounce_words)[i];
     {
         int check = verify_file(outname, size, prefix, (unsigned)sizeof(prefix),
                                 &actual, &check_detail);
