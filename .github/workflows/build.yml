@@ -30,6 +30,9 @@ jobs:
           make clean
           make app
           grep -Fq 'FD800000' src/main.c
+          grep -Fq 'FD80FFFF' src/main.c
+          grep -Fq '74000000' src/main.c
+          grep -Fq '74FFFFFF' src/main.c
           grep -Fq 'E5007000' src/main.c
           grep -Fq 'E5017000' src/main.c
           grep -Fq 'E5200000' src/main.c
