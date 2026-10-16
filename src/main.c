@@ -20,10 +20,11 @@
 #define NOR_BASE UINT32_C(0x80000000)
 #define RAM_BASE UINT32_C(0x8C000000)
 #define RS_BASE UINT32_C(0xFD800000)
+#define ADDIN_BASE UINT32_C(0x74000000)
 #define XRAM_BASE UINT32_C(0xE5007000)
 #define YRAM_BASE UINT32_C(0xE5017000)
 #define IL_BASE UINT32_C(0xE5200000)
-#define RS_LENGTH UINT32_C(0x00000800)
+#define RS_LENGTH UINT32_C(0x00010000)
 #define XY_LENGTH UINT32_C(0x00002000)
 #define IL_LENGTH UINT32_C(0x00004000)
 #define SIZE_16 UINT32_C(0x01000000)
@@ -38,7 +39,10 @@ static const char * const paths32[] = {
     "\\\\crd0\\ROM32A.BIN", "\\\\crd0\\ROM32B.BIN"
 };
 static const char * const paths_rs[] = {
-    "\\\\crd0\\RS2KA.BIN", "\\\\crd0\\RS2KB.BIN"
+    "\\\\crd0\\RS64KA.BIN", "\\\\crd0\\RS64KB.BIN"
+};
+static const char * const paths_addin[] = {
+    "\\\\crd0\\ADD16A.BIN", "\\\\crd0\\ADD16B.BIN"
 };
 static const char * const paths_xram[] = {
     "\\\\crd0\\XRAM8A.BIN", "\\\\crd0\\XRAM8B.BIN"
@@ -60,14 +64,15 @@ struct DumpRange {
 static const struct DumpRange ranges[] = {
     { NOR_BASE, SIZE_32, "ROM32 80000000-81FFFFFF", paths32 },
     { RAM_BASE, SIZE_16, "RAM16 8C000000-8CFFFFFF", paths16 },
-    { RS_BASE, RS_LENGTH, "RS  FD800000-FD8007FF", paths_rs },
+    { RS_BASE, RS_LENGTH, "RS  FD800000-FD80FFFF", paths_rs },
+    { ADDIN_BASE, SIZE_16, "ADDIN 74000000-74FFFFFF", paths_addin },
     { XRAM_BASE, XY_LENGTH, "XRAM E5007000-E5008FFF", paths_xram },
     { YRAM_BASE, XY_LENGTH, "YRAM E5017000-E5018FFF", paths_yram },
     { IL_BASE, IL_LENGTH, "IL   E5200000-E5203FFF", paths_il }
 };
 enum { CHOICE_ROM=0, CHOICE_RAM=1, CHOICE_RS=2,
-       CHOICE_XRAM=3, CHOICE_YRAM=4, CHOICE_IL=5,
-       CHOICE_TEST=6 };
+       CHOICE_XRAM=4, CHOICE_YRAM=5, CHOICE_IL=6,
+       CHOICE_ADDIN=3, CHOICE_TEST=7 };
 static const char digits[] = "0123456789ABCDEF";
 static const char * const test_paths[] = {
     "\\\\crd0\\SDTSTA.TXT", "\\\\crd0\\SDTSTB.TXT"
@@ -133,6 +138,7 @@ static int poll_choice(void)
     if (key_state(KEY_ENTER)) current |= 1u << 0;
     if (key_state(KEY_PAGE_DOWN)) current |= 1u << 1;
     if (key_state(KEY_CHAR_R)) current |= 1u << 2;
+    if (key_state(KEY_CHAR_A)) current |= 1u << 8;
     if (key_state(KEY_CHAR_X)) current |= 1u << 3;
     if (key_state(KEY_CHAR_Y)) current |= 1u << 4;
     if (key_state(KEY_CHAR_I)) current |= 1u << 5;
@@ -144,6 +150,7 @@ static int poll_choice(void)
     if (pressed & (1u << 0)) return CHOICE_ROM + 1;
     if (pressed & (1u << 1)) return CHOICE_RAM + 1;
     if (pressed & (1u << 2)) return CHOICE_RS + 1;
+    if (pressed & (1u << 8)) return CHOICE_ADDIN + 1;
     if (pressed & (1u << 3)) return CHOICE_XRAM + 1;
     if (pressed & (1u << 4)) return CHOICE_YRAM + 1;
     if (pressed & (1u << 5)) return CHOICE_IL + 1;
@@ -387,8 +394,8 @@ int main(void)
     (void)font;
 
     screen("SELECT REGION TO DUMP ON CRD0",
-           "ENTER:ROM32 PGDN:RAM16 R:RS X:XRAM",
-           "Y:YRAM I:IL  T:SD TEST",
+           "ENTER:ROM32 PGDN:RAM16 A:ADDIN",
+           "R:RS64K X:XRAM Y:YRAM I:IL T:TEST",
            "BACK:EXIT; ALL REGIONS OPT-IN");
     for (;;) {
         volatile unsigned spin;
@@ -417,6 +424,7 @@ int main(void)
         selection_key = key_state(KEY_ENTER) ||
                         key_state(KEY_PAGE_DOWN) ||
                         key_state(KEY_CHAR_R) ||
+                        key_state(KEY_CHAR_A) ||
                         key_state(KEY_CHAR_X) ||
                         key_state(KEY_CHAR_Y) ||
                         key_state(KEY_CHAR_I) ||
