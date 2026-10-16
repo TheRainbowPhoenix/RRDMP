@@ -13,8 +13,8 @@ The code reads the selected ROM/RAM range and writes an ordinary file to SD; it 
 
 ## Experimental extra memory dumps (on-chip)
 
-The `experiment/extra-onchip-memory` branch adds four additional,
-**independently confirmed, opt-in** dump choices to the original ROM32 and
+The `experiment/extra-onchip-memory` branch adds five additional,
+**independently selectable, opt-in** dump choices to the original ROM32 and
 RAM16 menu. These high-address reads may fault or be inaccessible from
 the ordinary EX-word add-on privilege level; compilation proves nothing
 about their runtime accessibility.
@@ -23,7 +23,8 @@ about their runtime accessibility.
 | --- | --- | --- | ---: | --- |
 | Enter | ROM32 | `0x80000000–0x81FFFFFF` | 33,554,432 | `ROM32A.BIN` |
 | Page Down | RAM16 | `0x8C000000–0x8CFFFFFF` | 16,777,216 | `RAM16A.BIN` |
-| **R** | **RS** | `0xFD800000–0xFD8007FF` | **2,048** | `RS2KA.BIN` |
+| **R** | **RS** | `0xFD800000–0xFD80FFFF` | **65,536** | `RS64KA.BIN` |
+| **A** | **Add-in** | `0x74000000–0x74FFFFFF` | **16,777,216** | `ADD16A.BIN` |
 | **X** | **XRAM** | `0xE5007000–0xE5008FFF` | **8,192** | `XRAM8A.BIN` |
 | **Y** | **YRAM** | `0xE5017000–0xE5018FFF` | **8,192** | `YRAM8A.BIN` |
 | **I** | **IL** | `0xE5200000–0xE5203FFF` | **16,384** | `IL16KA.BIN` |
@@ -39,10 +40,12 @@ respectively. Those addresses are **exclusive bounds**, consistent with
 the sizes of 8 KiB, 8 KiB and 16 KiB. Dumped last bytes are the
 preceding addresses listed in the table.
 
-**Significant risk:** RS at `0xFD800000`, XRAM/YRAM around `0xE5000000`,
+**Significant risk:** RS at `0xFD800000`–`0xFD80FFFF` and the add-in window
+at `0x74000000`, XRAM/YRAM around `0xE5000000`,
 and IL at `0xE5200000` may be physical/MMIO or privileged mappings
 not accessible to an ordinary user-mode process. Any read may reboot or
-hang the EX-word, including the first byte. Do not test them on a device
+hang the EX-word, including the first byte. These are experimental range assumptions,
+not verified device-wide readable memory. Do not test them on a device
 you cannot recover. Reading hardware registers can also have side
 effects. The app does not write through these source addresses but does
 create a file on SD.
