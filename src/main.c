@@ -19,6 +19,14 @@
 
 #define NOR_BASE UINT32_C(0x80000000)
 #define RAM_BASE UINT32_C(0x8C000000)
+#define RS_BASE UINT32_C(0xFD800000)
+#define ADDIN_BASE UINT32_C(0x74000000)
+#define XRAM_BASE UINT32_C(0xE5007000)
+#define YRAM_BASE UINT32_C(0xE5017000)
+#define IL_BASE UINT32_C(0xE5200000)
+#define RS_LENGTH UINT32_C(0x00010000)
+#define XY_LENGTH UINT32_C(0x00002000)
+#define IL_LENGTH UINT32_C(0x00004000)
 #define SIZE_16 UINT32_C(0x01000000)
 #define SIZE_32 UINT32_C(0x02000000)
 #define WRITE_CHUNK 4096u
@@ -30,6 +38,41 @@ static const char * const paths16[] = {
 static const char * const paths32[] = {
     "\\\\crd0\\ROM32A.BIN", "\\\\crd0\\ROM32B.BIN"
 };
+static const char * const paths_rs[] = {
+    "\\\\crd0\\RS64KA.BIN", "\\\\crd0\\RS64KB.BIN"
+};
+static const char * const paths_addin[] = {
+    "\\\\crd0\\ADD16A.BIN", "\\\\crd0\\ADD16B.BIN"
+};
+static const char * const paths_xram[] = {
+    "\\\\crd0\\XRAM8A.BIN", "\\\\crd0\\XRAM8B.BIN"
+};
+static const char * const paths_yram[] = {
+    "\\\\crd0\\YRAM8A.BIN", "\\\\crd0\\YRAM8B.BIN"
+};
+static const char * const paths_il[] = {
+    "\\\\crd0\\IL16KA.BIN", "\\\\crd0\\IL16KB.BIN"
+};
+/* Every range uses [base, base+length), with the table's end exclusive
+ * for XRAM, YRAM and IL. 1st and final byte are thus unambiguous. */
+struct DumpRange {
+    uint32_t base;
+    uint32_t length;
+    const char *label;
+    const char * const *paths;
+};
+static const struct DumpRange ranges[] = {
+    { NOR_BASE, SIZE_32, "ROM32 80000000-81FFFFFF", paths32 },
+    { RAM_BASE, SIZE_16, "RAM16 8C000000-8CFFFFFF", paths16 },
+    { RS_BASE, RS_LENGTH, "RS  FD800000-FD80FFFF", paths_rs },
+    { ADDIN_BASE, SIZE_16, "ADDIN 74000000-74FFFFFF", paths_addin },
+    { XRAM_BASE, XY_LENGTH, "XRAM E5007000-E5008FFF", paths_xram },
+    { YRAM_BASE, XY_LENGTH, "YRAM E5017000-E5018FFF", paths_yram },
+    { IL_BASE, IL_LENGTH, "IL   E5200000-E5203FFF", paths_il }
+};
+enum { CHOICE_ROM=0, CHOICE_RAM=1, CHOICE_RS=2,
+       CHOICE_XRAM=4, CHOICE_YRAM=5, CHOICE_IL=6,
+       CHOICE_ADDIN=3, CHOICE_TEST=7 };
 static const char digits[] = "0123456789ABCDEF";
 static const char * const test_paths[] = {
     "\\\\crd0\\SDTSTA.TXT", "\\\\crd0\\SDTSTB.TXT"
@@ -65,7 +108,7 @@ static void screen(const char *line1, const char *line2,
     set_pen(create_rgb16(255, 255, 255));
     draw_rect(0, 0, 528, 320);
     set_pen(create_rgb16(23, 47, 65));
-    print_at(14, 9, "RRDMP / ROM32 + RAM16 TO SD");
+    print_at(14, 9, "RRDMP / 6 MEMORY REGIONS TO SD");
     set_pen(create_rgb16(80, 98, 114));
     print_at(14, 30, "ORIGINAL DEVKITSH4 / NO FIRMWARE WRITES");
     set_pen(create_rgb16(190, 209, 219));
@@ -85,24 +128,33 @@ static uint8_t key_state(unsigned key)
     return get_key_state((uint8_t)key) != 0u;
 }
 
-/* Return a new key press, not every spin while a key is held.
- * PAGE DOWN selects the *experimental* 32 MiB variant. */
+/* On-device selection. Every key is edge-triggered; once a dump is
+ * selected, a second Enter confirmation is mandatory. */
 static int poll_choice(void)
 {
-    static unsigned previous = 0u;
-    unsigned current = 0u;
-    unsigned pressed;
+    static uint32_t previous = 0u;
+    uint32_t current = 0u, pressed;
     keypad_read();
-    if (key_state(KEY_ENTER)) current |= 1u;
-    if (key_state(KEY_PAGE_DOWN)) current |= 2u;
-    if (key_state(KEY_CHAR_T)) current |= 8u;
-    if (key_state(KEY_BACK) || key_state(KEY_POWER)) current |= 4u;
+    if (key_state(KEY_ENTER)) current |= 1u << 0;
+    if (key_state(KEY_PAGE_DOWN)) current |= 1u << 1;
+    if (key_state(KEY_CHAR_R)) current |= 1u << 2;
+    if (key_state(KEY_CHAR_A)) current |= 1u << 8;
+    if (key_state(KEY_CHAR_X)) current |= 1u << 3;
+    if (key_state(KEY_CHAR_Y)) current |= 1u << 4;
+    if (key_state(KEY_CHAR_I)) current |= 1u << 5;
+    if (key_state(KEY_CHAR_T)) current |= 1u << 6;
+    if (key_state(KEY_BACK) || key_state(KEY_POWER)) current |= 1u << 7;
     pressed = current & ~previous;
     previous = current;
-    if (pressed & 4u) return -1;
-    if (pressed & 1u) return 32;
-    if (pressed & 2u) return 16;
-    if (pressed & 8u) return 1;
+    if (pressed & (1u << 7)) return -1;
+    if (pressed & (1u << 0)) return CHOICE_ROM + 1;
+    if (pressed & (1u << 1)) return CHOICE_RAM + 1;
+    if (pressed & (1u << 2)) return CHOICE_RS + 1;
+    if (pressed & (1u << 8)) return CHOICE_ADDIN + 1;
+    if (pressed & (1u << 3)) return CHOICE_XRAM + 1;
+    if (pressed & (1u << 4)) return CHOICE_YRAM + 1;
+    if (pressed & (1u << 5)) return CHOICE_IL + 1;
+    if (pressed & (1u << 6)) return CHOICE_TEST + 1;
     return 0;
 }
 
@@ -234,11 +286,12 @@ static void run_sd_probe(void)
     show_file_check(name, check, actual, detail);
 }
 
-static int dump_to_sd(uint32_t size)
+static int dump_to_sd(const struct DumpRange *range)
 {
     const char *outname = 0;
-    const char * const *names = size == SIZE_32 ? paths32 : paths16;
-    uint32_t base_address = size == SIZE_32 ? NOR_BASE : RAM_BASE;
+    const char * const *names = range->paths;
+    uint32_t base_address = range->base;
+    uint32_t size = range->length;
     unsigned long available = 0;
     uint32_t completed = 0;
     uint32_t next_progress = 0;
@@ -264,7 +317,7 @@ static int dump_to_sd(uint32_t size)
     }
 
     if (!choose_existing_free_filename(names, &outname)) {
-        screen("CANNOT CREATE OUTPUT", "NOR16/32 A and B files may exist.",
+        screen("CANNOT CREATE OUTPUT", "A/B output names may exist.",
                "No existing file was deleted.", "BACK OR POWER: EXIT");
         return -3;
     }
@@ -276,7 +329,7 @@ static int dump_to_sd(uint32_t size)
     }
 
     hex8(end, size);
-    screen(size == SIZE_32 ? "DUMP ROM 80000000-81FFFFFF" : "DUMP RAM 8C000000-8CFFFFFF", "Writing exact selected mapped range.",
+    screen(range->label, "Writing selected memory region.",
            "Do not remove card or power off.", "BACK cancels after a chunk.");
 
     while (completed < size) {
@@ -335,66 +388,65 @@ static int dump_to_sd(uint32_t size)
 
 int main(void)
 {
-    int step;
-    int choice = 0;
-    unsigned last = 0;
+    int choice = 0, step;
+    unsigned selection_key;
     struct font *font = get_font();
     (void)font;
 
-    screen("SELECT ROM32 OR RAM16 TO SD",
-           "ENTER: ROM32 80000000-81FFFFFF",
-           "PAGE DOWN: RAM16 8C000000-8CFFFFFF",
-           "T: TINY SD FILE TEST / BACK: EXIT");
-
+    screen("SELECT REGION TO DUMP ON CRD0",
+           "ENTER:ROM32 PGDN:RAM16 A:ADDIN",
+           "R:RS64K X:XRAM Y:YRAM I:IL T:TEST",
+           "BACK:EXIT; ALL REGIONS OPT-IN");
     for (;;) {
         volatile unsigned spin;
         step = poll_choice();
         if (step < 0) return -2;
-        if (step != 0) {
-            choice = step;
-            if (choice == 1) {
-                screen("SD FILE WRITE/READBACK TEST", "WRITES 16 BYTES TO CRD0",
-                       "ENTER: CONFIRM TEST", "BACK: CANCEL");
-            } else if (choice == 16)
-                screen("CONFIRM RAM16 (16 MiB)", "8C000000 - 8CFFFFFF",
-                       "ENTER: WRITE NEW FILE TO CRD0",
-                       "BACK: CANCEL");
+        if (step > 0) {
+            choice = step - 1;
+            if (choice == CHOICE_TEST)
+                screen("CONFIRM 16-BYTE SD TEST", "No memory region is read.",
+                       "ENTER:TEST  BACK:CANCEL",
+                       "Creates new SDTSTA/B.TXT");
             else
-                screen("CONFIRM ROM32 (32 MiB)", "80000000 - 81FFFFFF",
-                       "MAPPING NOT VERIFIED END-TO-END!",
-                       "ENTER: WRITE / BACK: CANCEL");
+                screen("CONFIRM MEMORY DUMP TO CRD0",
+                       ranges[choice].label,
+                       "INVALID/PRIVILEGED READ MAY REBOOT!",
+                       "ENTER:WRITE  BACK:CANCEL");
             break;
         }
-        for (spin = 0u; spin < 10000u; ++spin) { }
+        for (spin=0;spin<10000u;spin++) { }
     }
 
-    /* Require key release between choosing size and confirming. */
-    for (;;) {
-        volatile unsigned spin;
+    /* Wait for all selection keys to be released; prevent accidental
+     * confirmation from the selection keystroke. */
+    do {
         keypad_read();
-        if (!key_state(KEY_ENTER) && !key_state(KEY_PAGE_DOWN)) break;
-        for (spin = 0u; spin < 10000u; ++spin) { }
-    }
+        selection_key = key_state(KEY_ENTER) ||
+                        key_state(KEY_PAGE_DOWN) ||
+                        key_state(KEY_CHAR_R) ||
+                        key_state(KEY_CHAR_A) ||
+                        key_state(KEY_CHAR_X) ||
+                        key_state(KEY_CHAR_Y) ||
+                        key_state(KEY_CHAR_I) ||
+                        key_state(KEY_CHAR_T);
+    } while (selection_key);
     for (;;) {
         volatile unsigned spin;
         keypad_read();
         if (key_state(KEY_BACK) || key_state(KEY_POWER)) return -2;
         if (key_state(KEY_ENTER)) break;
-        for (spin = 0u; spin < 10000u; ++spin) { }
-    }
-    if (choice == 1)
-        run_sd_probe();
-    else {
-        step = dump_to_sd(choice == 32 ? SIZE_32 : SIZE_16);
-        (void)step;
+        for (spin=0;spin<10000u;spin++) { }
     }
 
-    /* Keep result on screen until exit; don't hide errors automatically. */
+    if (choice == CHOICE_TEST) run_sd_probe();
+    else {
+        step = dump_to_sd(&ranges[choice]);
+        (void)step;
+    }
     for (;;) {
         volatile unsigned spin;
         keypad_read();
         if (key_state(KEY_BACK) || key_state(KEY_POWER)) return -2;
-        ++last;
-        for (spin = 0u; spin < 20000u; ++spin) { }
+        for (spin=0;spin<20000u;spin++) { }
     }
 }

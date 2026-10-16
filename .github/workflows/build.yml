@@ -2,7 +2,7 @@ name: Build RRDMP (original devkitSH4)
 
 on:
   push:
-    branches: [main]
+    branches: [main, experiment/extra-onchip-memory]
   workflow_dispatch:
 
 permissions:
@@ -29,6 +29,13 @@ jobs:
           export PATH="$DEVKITPRO/tools/bin:$DEVKITSH4/bin:$PATH"
           make clean
           make app
+          grep -Fq 'FD800000' src/main.c
+          grep -Fq 'FD80FFFF' src/main.c
+          grep -Fq '74000000' src/main.c
+          grep -Fq '74FFFFFF' src/main.c
+          grep -Fq 'E5007000' src/main.c
+          grep -Fq 'E5017000' src/main.c
+          grep -Fq 'E5200000' src/main.c
           for region in ja cn; do
             test -s "build/$region/RRDMP/rrdmp.d01"
             test -s "build/$region/RRDMP/diction.htm"
